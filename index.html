@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MacRockPod Installer</title>
+  <!-- Google Fonts for Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Custom Titlebar for macOS integration -->
+  <header class="window-titlebar">
+    <span class="window-title">MacRockPod Installer</span>
+  </header>
+
+  <main class="app-container">
+    
+    <!-- Sidebar Progress Trackers -->
+    <aside class="sidebar-progress">
+      <div class="progress-step active" id="step-track-scan">
+        <div class="step-num">1</div>
+        <div class="step-label">Select Device</div>
+      </div>
+      <div class="progress-step" id="step-track-confirm">
+        <div class="step-num">2</div>
+        <div class="step-label">Confirmation</div>
+      </div>
+      <div class="progress-step" id="step-track-install">
+        <div class="step-num">3</div>
+        <div class="step-label">Installing</div>
+      </div>
+      <div class="progress-step" id="step-track-finish">
+        <div class="step-num">4</div>
+        <div class="step-label">Finish</div>
+      </div>
+    </aside>
+
+    <!-- Main Content Panels -->
+    <section class="main-content">
+      
+      <!-- Panel 1: Device Selection -->
+      <div class="panel-screen active" id="panel-scan">
+        <h2>Connect Your iPod</h2>
+        <p class="subtitle">Please plug in your flash-modded iPod and make sure it is in Disk Mode.</p>
+        
+        <!-- Root Warning Banner -->
+        <div class="root-warning-banner glass-card warning-border" id="root-warning-banner" style="display: none; margin-bottom: 20px; padding: 12px 15px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 15px;">
+            <div>
+              <h3 style="color: var(--accent-color); margin: 0 0 5px 0; font-size: 14px; font-weight: 600;">⚠️ Launching as Admin (Root) Recommended</h3>
+              <p style="margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.4;">
+                macOS blocks low-level sector writes unless the installer runs with root credentials.
+              </p>
+            </div>
+            <div style="font-family: 'Space Mono', monospace; font-size: 11px; background: rgba(0,0,0,0.3); padding: 6px 10px; border-radius: 4px; border: 1px dashed rgba(255,255,255,0.1); white-space: nowrap;">
+              sudo npm start
+            </div>
+          </div>
+        </div>
+        
+        <div class="device-list" id="device-list-container">
+          <!-- Dynamically populated card templates -->
+          <div class="loading-spinner-container" id="scan-loading">
+            <div class="spinner"></div>
+            <p>Scanning for connected devices...</p>
+          </div>
+        </div>
+
+        <!-- Manual Setup / Configuration Override -->
+        <div class="configuration-card glass-card">
+          <h3>iPod Model Profile</h3>
+          <p class="card-desc">Since flash-modded cards may not contain valid firmware partitions, select your physical iPod model profile manually:</p>
+          <div class="select-wrapper">
+            <select id="model-select">
+              <option value="ipodvideo" selected>iPod Video (5th / 5.5th Gen)</option>
+              <option value="ipod6g">iPod Classic (6th / 7th Gen)</option>
+            </select>
+          </div>
+          <div class="dfu-alert" id="dfu-warning-box" style="display: none;">
+            <p>💡 <strong>Note:</strong> iPod Classic installation requires putting the device in USB DFU mode first. Connect the iPod and hold <strong>Menu + Select</strong> for 8 seconds, then immediately hold <strong>Select + Play</strong>.</p>
+            <button class="btn secondary-btn btn-sm" id="btn-check-dfu">Verify DFU Connection</button>
+            <span class="status-badge error" id="dfu-status-badge">DFU Not Detected</span>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button class="btn secondary-btn" id="btn-rescan">Rescan Devices</button>
+          <button class="btn primary-btn disabled" id="btn-next-to-confirm" disabled>Proceed to Setup</button>
+        </div>
+      </div>
+
+      <!-- Panel 2: Target Confirmation -->
+      <div class="panel-screen" id="panel-confirm">
+        <h2>Confirm Partition Setup</h2>
+        <p class="subtitle">Review the formatting actions. This operation is destructive.</p>
+
+        <div class="confirm-summary glass-card">
+          <div class="summary-item">
+            <span class="summary-label">Target Disk Node:</span>
+            <span class="summary-value" id="summary-disk-id">/dev/disk10</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Reported Size:</span>
+            <span class="summary-value" id="summary-disk-size">191.73 GB</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Profile:</span>
+            <span class="summary-value" id="summary-model-name">iPod Video (5th Gen)</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Conversion:</span>
+            <span class="summary-value" id="summary-conversion-type">Convert to MBR FAT32 (Winpod)</span>
+          </div>
+        </div>
+
+        <!-- Safety Gate -->
+        <div class="safety-gate-card glass-card error-border">
+          <h3>⚠️ Destructive Action Warning</h3>
+          <p>We are going to wipe the existing partition map (APM/GUID) and completely reconstruct it as MBR FAT32. This will erase all music files currently stored on this iPod.</p>
+          <label class="checkbox-container">
+            <input type="checkbox" id="chk-safety-agree">
+            <span class="checkmark"></span>
+            I understand that formatting will erase all media on the target drive.
+          </label>
+        </div>
+
+        <div class="actions-row">
+          <button class="btn secondary-btn" id="btn-back-to-scan">Back</button>
+          <button class="btn primary-btn disabled" id="btn-start-install" disabled>Start Installation</button>
+        </div>
+      </div>
+
+      <!-- Panel 3: Installation Progress -->
+      <div class="panel-screen" id="panel-install">
+        <h2 id="install-title">Installing Rockbox</h2>
+        <p class="subtitle" id="install-subtitle">Please do not disconnect the iPod during this operation.</p>
+
+        <!-- Dynamic Checklists -->
+        <ul class="install-checklist">
+          <li class="check-item pending" id="chk-step-freeze">
+            <span class="bullet"></span> Freeze background macOS daemons
+          </li>
+          <li class="check-item pending" id="chk-step-partition">
+            <span class="bullet"></span> Overwrite partition map (MBR FAT32)
+          </li>
+          <li class="check-item pending" id="chk-step-bootloader">
+            <span class="bullet"></span> Flash Rockbox bootloader sectors
+          </li>
+          <li class="check-item pending" id="chk-step-payload">
+            <span class="bullet"></span> Download and extract Rockbox payload
+          </li>
+        </ul>
+
+        <!-- Main Progress Bar -->
+        <div class="progress-bar-container">
+          <div class="progress-bar-glow" id="install-progress-bar" style="width: 0%;"></div>
+        </div>
+        <p class="progress-status-text" id="install-status-text">Initializing parameters...</p>
+
+        <!-- Real-Time Console Output Logger -->
+        <div class="console-logger">
+          <div class="console-header">Console Output Logs</div>
+          <pre class="console-body" id="console-logs-body">Initializing log engine...</pre>
+        </div>
+      </div>
+
+      <!-- Panel 4: Completion Panel -->
+      <div class="panel-screen" id="panel-finish">
+        <div class="success-icon-container">
+          <div class="success-circle">
+            <svg class="checkmark-svg" viewBox="0 0 52 52">
+              <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
+              <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+            </svg>
+          </div>
+        </div>
+        
+        <h2>Installation Completed!</h2>
+        <p class="subtitle">Rockbox has been successfully installed on your iPod.</p>
+
+        <!-- Post-Install Safety Protocols Card -->
+        <div class="safety-protocols-card glass-card warning-border">
+          <h3>🔒 Critical Music Sync Protocol</h3>
+          <p>To prevent file system crashes, data corruption, or finder hangs during future music syncs on macOS:</p>
+          <ul class="protocol-list">
+            <li>Always turn the iPod's physical <strong>HOLD switch ON</strong> before plugging it into your Mac.</li>
+            <li>This forces the device to boot into its <strong>original Apple Disk Mode</strong> cache layer rather than using Rockbox USB drivers, ensuring high-speed data stability on flash adapters.</li>
+          </ul>
+        </div>
+
+        <div class="actions-row">
+          <button class="btn primary-btn" id="btn-close-app">Finish & Close</button>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

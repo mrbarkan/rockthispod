@@ -1,0 +1,12 @@
+# Node dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Large source dependencies (tracked via patches/)
+rockbox-src/

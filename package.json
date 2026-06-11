@@ -1,0 +1,18 @@
+{
+  "name": "macrockpod-installer",
+  "version": "1.0.0",
+  "description": "MacRockPod Installer for Apple Silicon Macs",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "package": "electron-packager . MacRockPod --platform=darwin --arch=arm64 --out=dist --overwrite"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^42.4.0",
+    "electron-packager": "^17.1.2"
+  }
+}

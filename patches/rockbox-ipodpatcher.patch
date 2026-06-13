@@ -23,28 +23,6 @@ index cf1b3dd..1c27fce 100644
  }
  #endif
  
-diff --git a/utils/ipodpatcher/ipodpatcher.c b/utils/ipodpatcher/ipodpatcher.c
-index 8eb85b6..7b498a5 100644
---- a/utils/ipodpatcher/ipodpatcher.c
-+++ b/utils/ipodpatcher/ipodpatcher.c
-@@ -274,7 +274,7 @@ int read_partinfo(struct ipod_t* ipod, int silent)
-         return -1;
-     }
- 
--    ipod->start = ipod->pinfo[0].start*ipod->sector_size;
-+    ipod->start = ipod->pinfo[0].start*512;
-     return 0;
- }
- 
-@@ -296,7 +296,7 @@ int read_partition(struct ipod_t* ipod, int outfile)
- 
-     fprintf(stderr,"[INFO] Writing %d sectors to output file\n",count);
- 
--    bytesleft = count * ipod->sector_size;
-+    bytesleft = count * 512;
-     while (bytesleft > 0) {
-         if (bytesleft > BUFFER_SIZE) {
-            chunksize = BUFFER_SIZE;
 diff --git a/utils/libtools.make b/utils/libtools.make
 index 3ab150e..50a8191 100644
 --- a/utils/libtools.make

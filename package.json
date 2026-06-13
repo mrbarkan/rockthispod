@@ -5,7 +5,9 @@
   "main": "main.js",
   "scripts": {
     "start": "electron . --no-sandbox",
-    "package": "electron-packager . MacRockPod --platform=darwin --arch=arm64 --out=dist --overwrite"
+    "test": "node test/geometry.test.js",
+    "package": "electron-packager . MacRockPod --platform=darwin --arch=arm64 --out=dist --overwrite --app-bundle-id=com.macrockpod.installer --app-version=1.0.0 --app-category-type=public.app-category.utilities --icon=build/icon.icns --ignore=\"^/rockbox-src\" --ignore=\"^/dist\" --ignore=\"^/build\" --ignore=\"^/test\" --ignore=\"^/repair-\" --ignore=\"\\.md$\" --ignore=\"\\.DS_Store$\"",
+    "dist": "bash build/notarize.sh"
   },
   "keywords": [],
   "author": "",

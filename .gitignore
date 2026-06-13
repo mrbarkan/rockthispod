@@ -4,9 +4,15 @@ node_modules/
 # Build outputs
 dist/
 
+# Generated icon intermediates (icon.svg + icon.icns are tracked; PNGs are not)
+build/icon.iconset/
+
+# Logs
+*.log
+
 # OS metadata
 .DS_Store
 Thumbs.db
 
-# Large source dependencies (tracked via patches/)
+# Large source dependency (tracked via patches/rockbox-ipodpatcher.patch)
 rockbox-src/

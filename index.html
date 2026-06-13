@@ -51,13 +51,10 @@
         <div class="root-warning-banner glass-card warning-border" id="root-warning-banner" style="display: none; margin-bottom: 20px; padding: 12px 15px;">
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 15px;">
             <div>
-              <h3 style="color: var(--accent-color); margin: 0 0 5px 0; font-size: 14px; font-weight: 600;">⚠️ Launching as Admin (Root) Recommended</h3>
+              <h3 style="color: var(--accent-color); margin: 0 0 5px 0; font-size: 14px; font-weight: 600;">🔑 Administrator Password Required</h3>
               <p style="margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.4;">
-                macOS blocks low-level sector writes unless the installer runs with root credentials.
+                macOS blocks low-level disk writes, so you will be asked for your administrator password during installation.
               </p>
-            </div>
-            <div style="font-family: 'Space Mono', monospace; font-size: 11px; background: rgba(0,0,0,0.3); padding: 6px 10px; border-radius: 4px; border: 1px dashed rgba(255,255,255,0.1); white-space: nowrap;">
-              sudo npm start
             </div>
           </div>
         </div>
@@ -70,21 +67,10 @@
           </div>
         </div>
 
-        <!-- Manual Setup / Configuration Override -->
+        <!-- Supported model note -->
         <div class="configuration-card glass-card">
-          <h3>iPod Model Profile</h3>
-          <p class="card-desc">Since flash-modded cards may not contain valid firmware partitions, select your physical iPod model profile manually:</p>
-          <div class="select-wrapper">
-            <select id="model-select">
-              <option value="ipodvideo" selected>iPod Video (5th / 5.5th Gen)</option>
-              <option value="ipod6g">iPod Classic (6th / 7th Gen)</option>
-            </select>
-          </div>
-          <div class="dfu-alert" id="dfu-warning-box" style="display: none;">
-            <p>💡 <strong>Note:</strong> iPod Classic installation requires putting the device in USB DFU mode first. Connect the iPod and hold <strong>Menu + Select</strong> for 8 seconds, then immediately hold <strong>Select + Play</strong>.</p>
-            <button class="btn secondary-btn btn-sm" id="btn-check-dfu">Verify DFU Connection</button>
-            <span class="status-badge error" id="dfu-status-badge">DFU Not Detected</span>
-          </div>
+          <h3>Supported model: iPod Video (5th / 5.5th Gen)</h3>
+          <p class="card-desc">This installer targets the iPod Video / iPod 5G &amp; 5.5G, including iFlash/SD-modded units (it auto-detects 512- or 2048-byte sectors). Your iPod must already have its original Apple firmware on it — if it was never restored, restore it once with Finder first.</p>
         </div>
 
         <div class="actions-row">
@@ -142,16 +128,19 @@
         <!-- Dynamic Checklists -->
         <ul class="install-checklist">
           <li class="check-item pending" id="chk-step-freeze">
-            <span class="bullet"></span> Freeze background macOS daemons
+            <span class="bullet"></span> Pause background macOS daemons
+          </li>
+          <li class="check-item pending" id="chk-step-download">
+            <span class="bullet"></span> Download bootloader &amp; Rockbox build
           </li>
           <li class="check-item pending" id="chk-step-partition">
-            <span class="bullet"></span> Overwrite partition map (MBR FAT32)
+            <span class="bullet"></span> Write partition table &amp; format (FAT32)
           </li>
           <li class="check-item pending" id="chk-step-bootloader">
-            <span class="bullet"></span> Flash Rockbox bootloader sectors
+            <span class="bullet"></span> Install bootloader into Apple firmware
           </li>
           <li class="check-item pending" id="chk-step-payload">
-            <span class="bullet"></span> Download and extract Rockbox payload
+            <span class="bullet"></span> Extract Rockbox onto the iPod
           </li>
         </ul>
 

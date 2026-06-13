@@ -1,8 +1,9 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const { exec } = require('child_process');
 const fs = require('fs');
 const https = require('https');
+const { parseIpodpatcherList, buildWinpodMbr, computeLayout } = require('./lib/geometry');
 
 let mainWindow;
 
@@ -21,7 +22,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
-  mainWindow.webContents.openDevTools();
+  // mainWindow.webContents.openDevTools();
 }
 
 app.whenReady().then(() => {
@@ -33,497 +34,286 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  // Reload background daemons if we stopped them
-  exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPDeviceDiscoveryAgent.plist 2>/dev/null');
-  exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPLibraryAgent.plist 2>/dev/null');
-  
-  if (process.platform !== 'darwin') {
-    app.quit();
-  } else {
-    app.quit(); // Explicit quit on Mac since this is a single-window utility
-  }
+  // Reload background daemons if we paused them
+  reloadAgents();
+  app.quit();
 });
 
-// Helper: Run command asynchronously
+// ---------------------------------------------------------------------------
+// Command helpers
+// ---------------------------------------------------------------------------
+
 function runCommand(cmd) {
   return new Promise((resolve) => {
-    exec(cmd, (err, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) resolve({ success: false, error: err.message, stdout, stderr });
       else resolve({ success: true, stdout, stderr });
     });
   });
 }
 
-// Helper: Run elevated/admin command
+// Run a command with administrator privileges. When the app already runs as
+// root we shell out directly; otherwise we use one osascript prompt. NOTE: even
+// as root, macOS TCC requires the *app* (MacRockPod.app) to have Full Disk
+// Access before it can touch /dev/rdiskN - see the FDA guidance in the UI.
 function runAdminCommand(cmd) {
   const isRoot = process.getuid && process.getuid() === 0;
   if (isRoot) {
     return runCommand(cmd);
-  } else {
-    const escapedCmd = cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const appleScript = `do shell script "${escapedCmd}" with administrator privileges`;
-    return runCommand(`osascript -e '${appleScript}'`);
   }
+  const escaped = cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const appleScript = `do shell script "${escaped}" with administrator privileges`;
+  return runCommand(`osascript -e '${appleScript.replace(/'/g, "'\\''")}'`);
 }
 
-// IPC Handler: Scan for connected iPods
+function reloadAgents() {
+  exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPDeviceDiscoveryAgent.plist 2>/dev/null');
+  exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPLibraryAgent.plist 2>/dev/null');
+}
+
+// ---------------------------------------------------------------------------
+// Device scan
+// ---------------------------------------------------------------------------
+
 ipcMain.handle('scan-ipods', async () => {
-  console.log('[BACKEND] Received scan-ipods IPC request');
   const listRes = await runCommand('diskutil list');
-  if (!listRes.success) {
-    console.error('[BACKEND] diskutil list failed:', listRes.error);
-    return [];
-  }
-  
-  const stdout = listRes.stdout;
+  if (!listRes.success) return [];
+
   const disks = [];
   const regex = /\/dev\/(disk\d+)\s+\(external,\s+physical\):/g;
   let match;
-  while ((match = regex.exec(stdout)) !== null) {
+  while ((match = regex.exec(listRes.stdout)) !== null) {
     disks.push(match[1]);
   }
-  console.log('[BACKEND] Detected external physical disks:', disks);
 
   const ipods = [];
   for (const disk of disks) {
-    console.log(`[BACKEND] Querying diskutil info for ${disk}...`);
     const infoRes = await runCommand(`diskutil info ${disk}`);
-    if (infoRes.success) {
-      const infoStr = infoRes.stdout;
-      const mediaTypeMatch = /Media Type:\s+(.+)/.exec(infoStr);
-      const mediaNameMatch = /Device \/ Media Name:\s+(.+)/.exec(infoStr);
-      const diskSizeMatch = /Disk Size:\s+(.+)/.exec(infoStr);
-      const contentMatch = /Content \(IOContent\):\s+(.+)/.exec(infoStr);
+    if (!infoRes.success) continue;
+    const info = infoRes.stdout;
 
-      const mediaType = mediaTypeMatch ? mediaTypeMatch[1].trim() : '';
-      const mediaName = mediaNameMatch ? mediaNameMatch[1].trim() : '';
-      const size = diskSizeMatch ? diskSizeMatch[1].trim() : 'Unknown';
-      const content = contentMatch ? contentMatch[1].trim() : '';
+    const mediaType = (/Media Type:\s+(.+)/.exec(info) || [])[1]?.trim() || '';
+    const mediaName = (/Device \/ Media Name:\s+(.+)/.exec(info) || [])[1]?.trim() || '';
+    const size = (/Disk Size:\s+(.+)/.exec(info) || [])[1]?.trim() || 'Unknown';
+    const content = (/Content \(IOContent\):\s+(.+)/.exec(info) || [])[1]?.trim() || '';
 
-      console.log(`[BACKEND] Disk ${disk} metadata: mediaType="${mediaType}", mediaName="${mediaName}", content="${content}"`);
+    const isIpod = mediaType.toLowerCase().includes('ipod') ||
+                   mediaName.toLowerCase().includes('ipod') ||
+                   content.toLowerCase().includes('apple_mdfw');
+    if (!isIpod) continue;
 
-      const isIpod = mediaType.toLowerCase().includes('ipod') || mediaName.toLowerCase().includes('ipod') || content.toLowerCase().includes('apple_mdfw');
-      console.log(`[BACKEND] isIpod evaluation for ${disk}:`, isIpod);
-      
-      if (isIpod) {
-        // Try to get volume labels
-        const volNames = [];
-        const lines = stdout.split('\n');
-        let inDiskBlock = false;
-        for (const line of lines) {
-          if (line.startsWith(`/dev/${disk} `)) {
-            inDiskBlock = true;
-            continue;
-          }
-          if (inDiskBlock && line.startsWith('/dev/disk') && !line.startsWith(`/dev/${disk}`)) {
-            break;
-          }
-          if (inDiskBlock) {
-            const partMatch = /\s+\d+:\s+(\S+)\s+(.*?)\s+(\d+(\.\d+)?\s+[KMG]B)\s+(disk\d+s\d+)/.exec(line);
-            if (partMatch) {
-              const partType = partMatch[1];
-              const label = partMatch[2].trim();
-              if (label && label !== partType && !label.startsWith('Container') && !label.startsWith('EFI')) {
-                volNames.push(label);
-              }
-            }
-          }
-        }
+    // This disk's own partition scheme decides macpod (APM) vs winpod (MBR)
+    const isMacPod = content.includes('Apple_partition_scheme');
 
-        const isMacPod = content.includes('Apple_partition_scheme') || infoStr.includes('Apple_partition_scheme') || stdout.includes('Apple_partition_map');
-
-        const ipodObj = {
-          id: disk,
-          name: mediaName || 'iPod',
-          size: size.split('(')[0].trim(),
-          type: isMacPod ? 'macpod' : 'winpod',
-          volumeName: volNames.join(', ') || 'IPOD'
-        };
-        console.log(`[BACKEND] Matching iPod found, pushing to devices:`, ipodObj);
-        ipods.push(ipodObj);
-      }
-    }
+    ipods.push({
+      id: disk,
+      name: mediaName || 'iPod',
+      size: size.split('(')[0].trim(),
+      type: isMacPod ? 'macpod' : 'winpod',
+      volumeName: 'IPOD'
+    });
   }
   return ipods;
 });
 
-// IPC Handler: Check DFU devices for iPod Classic
-ipcMain.handle('scan-dfu', async () => {
-  const mks5lbootPath = path.join(__dirname, 'bin', 'mks5lboot');
-  const res = await runCommand(`"${mks5lbootPath}" --dfuscan`);
-  if (res.success && res.stdout.includes('iPod Classic found')) {
-    return { found: true, details: res.stdout.trim() };
-  }
-  return { found: false, log: res.stdout || res.stderr };
-});
+ipcMain.handle('is-root', () => process.getuid && process.getuid() === 0);
 
-// IPC Handler: Check if running as root
-ipcMain.handle('is-root', () => {
-  return process.getuid && process.getuid() === 0;
-});
-
-// IPC Handler: Open macOS FDA settings
 ipcMain.on('open-fda-settings', () => {
   exec('open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"');
 });
 
-// Helper: Download files with progress
+// ---------------------------------------------------------------------------
+// Downloads
+// ---------------------------------------------------------------------------
+
 function downloadFile(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
-    const request = https.get(url, (response) => {
-      // Handle redirects
+    https.get(url, (response) => {
       if (response.statusCode === 301 || response.statusCode === 302) {
+        file.close();
         downloadFile(response.headers.location, destPath, onProgress).then(resolve).catch(reject);
         return;
       }
       if (response.statusCode !== 200) {
-        reject(new Error(`Server returned status code ${response.statusCode}`));
+        reject(new Error(`Download failed: server returned ${response.statusCode} for ${url}`));
         return;
       }
-
       const total = parseInt(response.headers['content-length'], 10);
       let downloaded = 0;
-
       response.on('data', (chunk) => {
         downloaded += chunk.length;
-        if (total) {
-          onProgress(downloaded, total);
-        }
+        if (total) onProgress(downloaded, total);
       });
-
       response.pipe(file);
-
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-    });
-
-    request.on('error', (err) => {
+      file.on('finish', () => file.close(resolve));
+    }).on('error', (err) => {
       fs.unlink(destPath, () => {});
       reject(err);
     });
   });
 }
 
-// IPC Handler: Run Install Task
+// ---------------------------------------------------------------------------
+// Install
+// (geometry helpers live in lib/geometry.js so they can be unit-tested)
+// ---------------------------------------------------------------------------
+
 ipcMain.on('run-install-task', async (event, config) => {
-  const { diskId, model, isClassic } = config;
+  const { diskId, model } = config; // model is always an iPod Video target id
   const ipodpatcherPath = path.join(__dirname, 'bin', 'ipodpatcher');
-  const mks5lbootPath = path.join(__dirname, 'bin', 'mks5lboot');
-  
-  const sendLog = (text) => {
-    console.log(text);
-    event.reply('task-log', text);
-  };
+
+  const sendLog = (text) => { console.log(text); event.reply('task-log', text); };
   const sendProgress = (step, percent, status) => event.reply('task-progress', { step, percent, status });
 
+  const tempDir = app.getPath('temp');
+  const blDest = path.join(tempDir, `bootloader-${model}.ipod`);
+  const rbDest = path.join(tempDir, `rockbox-${model}.zip`);
+  const mbrDest = path.join(tempDir, `mbr-${diskId}.bin`);
+  const dev = `/dev/${diskId}`;
+  const rdev = `/dev/r${diskId}`;
+
   try {
-    // Step 1: Freeze macOS System Daemons
-    sendProgress('freeze', 10, 'Freezing system daemons...');
-    sendLog('[INFO] Suspending com.apple.AMPDeviceDiscoveryAgent...');
+    if (!diskId) throw new Error('No iPod was selected.');
+
+    // Step 1: pause the macOS daemons that grab the iPod the instant it mounts
+    sendProgress('freeze', 5, 'Pausing conflicting system daemons...');
+    sendLog('[INFO] Suspending AMPDeviceDiscoveryAgent / AMPLibraryAgent...');
     await runCommand('launchctl unload -w /System/Library/LaunchAgents/com.apple.AMPDeviceDiscoveryAgent.plist 2>/dev/null');
-    sendLog('[INFO] Suspending com.apple.AMPLibraryAgent...');
     await runCommand('launchctl unload -w /System/Library/LaunchAgents/com.apple.AMPLibraryAgent.plist 2>/dev/null');
 
-    // Step 2: Unmount & Partition / Convert
-    sendProgress('partition', 30, 'Unmounting & converting partition table...');
-    sendLog(`[INFO] Unmounting disk /dev/${diskId}...`);
-    const unmountRes = await runCommand(`diskutil unmountDisk /dev/${diskId}`);
-    if (!unmountRes.success) {
-      sendLog(`[WARN] Unmount failed: ${unmountRes.stderr || unmountRes.stdout}. Attempting force unmount...`);
-      await runCommand(`diskutil unmountDisk force /dev/${diskId}`);
-    }
-
-    if (!isClassic) {
-      sendLog('[INFO] Formatting iPod Video to dual-partition MBR layout...');
-      
-      // Query diskutil info to get exact size and block size
-      sendLog(`[INFO] Querying disk info for ${diskId}...`);
-      const infoRes = await runCommand(`diskutil info ${diskId}`);
-      if (!infoRes.success) {
-        throw new Error(`Failed to query disk info: ${infoRes.stderr || infoRes.stdout}`);
-      }
-      const infoStr = infoRes.stdout;
-      
-      const totalBytesMatch = /Disk Size:\s+.*\((\d+)\s+Bytes\)/.exec(infoStr);
-      if (!totalBytesMatch) {
-        throw new Error('Could not parse disk size from diskutil info!');
-      }
-      const totalBytes = parseInt(totalBytesMatch[1], 10);
-      
-      const blockSizeMatch = /Device Block Size:\s+(\d+)\s+Bytes/.exec(infoStr);
-      const deviceBlockSize = blockSizeMatch ? parseInt(blockSizeMatch[1], 10) : 512;
-      
-      sendLog(`[INFO] Disk size: ${totalBytes} Bytes. Block size: ${deviceBlockSize} Bytes.`);
-      
-      // Generate custom MBR sector matching device block size
-      const mbr = Buffer.alloc(deviceBlockSize);
-      const totalSectors = Math.floor(totalBytes / 512);
-      
-      // Partition 1 (Firmware): start 64, size 163840, type 0x00
-      mbr[446 + 0] = 0x00; // bootable
-      mbr[446 + 4] = 0x00; // type (0x00 = empty/firmware)
-      mbr.writeUInt32LE(64, 446 + 8);
-      mbr.writeUInt32LE(163840, 446 + 12);
-      
-      // Partition 2 (Data): start 163904, size totalSectors - 163904, type 0x0B
-      mbr[462 + 0] = 0x80; // bootable (active)
-      mbr[462 + 4] = 0x0B; // type (0x0B = FAT32)
-      mbr.writeUInt32LE(163904, 462 + 8);
-      mbr.writeUInt32LE(totalSectors - 163904, 462 + 12);
-      
-      // Boot signature
-      mbr[510] = 0x55;
-      mbr[511] = 0xAA;
-      
-      const tempDir = app.getPath('temp');
-      const tempMbrPath = path.join(tempDir, `mbr_${diskId}.bin`);
-      fs.writeFileSync(tempMbrPath, mbr);
-      
-      sendLog('[INFO] Writing custom MBR partition structures to raw sectors...');
-      const writeMbrRes = await runAdminCommand(`diskutil unmountDisk force /dev/${diskId} && dd if="${tempMbrPath}" of=/dev/r${diskId} bs=${deviceBlockSize} count=1`);
-      if (!writeMbrRes.success) {
-        throw new Error(`Failed to write iPod MBR partition table: ${writeMbrRes.stderr || writeMbrRes.stdout}`);
-      }
-      fs.unlink(tempMbrPath, () => {});
- 
-      // Check if original Apple firmware already exists at LBA 64 (offset 32768 bytes)
-      let hasOriginalFw = false;
-      try {
-        const readBuf = Buffer.alloc(deviceBlockSize);
-        const fd = fs.openSync(`/dev/${diskId}`, 'r');
-        fs.readSync(fd, readBuf, 0, deviceBlockSize, 32768);
-        fs.closeSync(fd);
-        
-        const appleStopSignStr = "{{~~  /-----\\   ";
-        if (readBuf.toString('ascii', 0, appleStopSignStr.length) === appleStopSignStr) {
-          const ososLen = readBuf.readUInt32LE(0x210);
-          if (ososLen > 1024 * 1024) {
-            hasOriginalFw = true;
-            sendLog('[INFO] Valid original Apple firmware detected on partition. Preserving original firmware.');
-          } else {
-            sendLog('[INFO] Mock/invalid Apple firmware directory detected.');
-          }
-        }
-      } catch (err) {
-        sendLog(`[WARN] Could not read existing sector: ${err.message}`);
-      }
-
-      if (!hasOriginalFw) {
-        sendLog('[WARN] No original Apple firmware detected on this partition.');
-        sendLog('[WARN] To ensure a bootable iPod, you should first restore the device via Finder/iTunes.');
-        sendLog('[INFO] Injecting Apple copyright and firmware directory signatures for compatibility...');
-
-        const sigBuf = Buffer.alloc(deviceBlockSize);
-        const appleStopSignStr = 
-          "{{~~  /-----\\   " +
-          "{{~~ /       \\  " +
-          "{{~~|         | " +
-          "{{~~| S T O P | " +
-          "{{~~|         | " +
-          "{{~~ \\       /  " +
-          "{{~~  \\-----/   " +
-          "Copyright(C) 200" +
-          "1 Apple Computer" +
-          ", Inc.----------" +
-          "----------------" +
-          "----------------" +
-          "----------------" +
-          "----------------" +
-          "----------------" +
-          "---------------";
-        
-        sigBuf.write(appleStopSignStr, 0, 'ascii');
-        sigBuf[255] = 0x00; // Null terminator
-        
-        // Write firmware directory headers at 0x100
-        sigBuf.write(']ih[', 0x100, 'ascii');
-        sigBuf.writeUInt32LE(0, 0x104); // diroffset = 0
-        sigBuf.writeUInt16LE(2, 0x10A); // version = 2
-        
-        // Write mock directory entry for FTYPE_OSOS (soso) at 0x200
-        sigBuf.write('!ATA', 0x200, 'ascii');
-        sigBuf.write('soso', 0x204, 'ascii');
-        sigBuf.writeUInt32LE(0, 0x208); // id = 0
-        sigBuf.writeUInt32LE(1024, 0x20c); // devOffset = 1024
-        sigBuf.writeUInt32LE(16384, 0x210); // len = 16KB
-        sigBuf.writeUInt32LE(0, 0x214); // addr = 0
-        sigBuf.writeUInt32LE(0, 0x218); // entryOffset = 0
-        sigBuf.writeUInt32LE(0, 0x21c); // chksum = 0
-        sigBuf.writeUInt32LE(0xb000, 0x220); // vers = 0xb000
-        sigBuf.writeUInt32LE(0, 0x224); // loadAddr = 0
-        
-        const tempSigPath = path.join(tempDir, `sig_${diskId}.bin`);
-        fs.writeFileSync(tempSigPath, sigBuf);
-        
-        const seekVal = 32768 / deviceBlockSize;
-        const writeSigRes = await runAdminCommand(`dd if="${tempSigPath}" of=/dev/r${diskId} bs=${deviceBlockSize} seek=${seekVal} count=1`);
-        if (!writeSigRes.success) {
-          throw new Error(`Failed to inject Apple copyright signature: ${writeSigRes.stderr || writeSigRes.stdout}`);
-        }
-        sendLog('[INFO] Apple copyright and firmware directory signatures injected successfully.');
-        fs.unlink(tempSigPath, () => {});
-      }
-      
-      sendLog('[INFO] MBR written successfully. Reloading disk partition layout...');
-      await runCommand(`diskutil unmountDisk force /dev/${diskId}`);
-      await new Promise(r => setTimeout(r, 2000));
-      
-      sendLog('[INFO] Creating FAT32 filesystem on data partition (Partition 2)...');
-      const formatRes = await runAdminCommand(`diskutil unmountDisk force /dev/${diskId} && newfs_msdos -F 32 -v IPOD /dev/r${diskId}s2`);
-      if (!formatRes.success) {
-        throw new Error(`Failed to format data partition: ${formatRes.stderr || formatRes.stdout}`);
-      }
-      sendLog('[INFO] FAT32 data partition formatted successfully.');
-    } else {
-      sendLog('[INFO] iPod Classic detected. Partitioning to MBR FAT32 natively via diskutil...');
-      const partRes = await runCommand(`diskutil partitionDisk ${diskId} MBR "MS-DOS FAT32" IPOD 0`);
-      if (!partRes.success) {
-        throw new Error(`NATIVE Partitioning failed: ${partRes.stderr || partRes.stdout}`);
-      }
-      sendLog(partRes.stdout);
-    }
-
-    // Step 3: Flash Rockbox Bootloader
-    sendProgress('bootloader', 50, 'Injecting custom Rockbox bootloader...');
-    const blUrl = isClassic 
-      ? 'https://download.rockbox.org/bootloader/ipod/bootloaders.zip' // We fetch official packages
-      : `https://download.rockbox.org/bootloader/ipod/bootloader-${model}.ipod`;
-      
-    const tempDir = app.getPath('temp');
-    const blDest = path.join(tempDir, isClassic ? 'bootloaders.zip' : `bootloader-${model}.ipod`);
-    
-    sendLog(`[INFO] Fetching bootloader binary from ${blUrl}...`);
+    // Step 2: download bootloader + build up front, so we fail early if offline
+    const blUrl = `https://download.rockbox.org/bootloader/ipod/bootloader-${model}.ipod`;
+    sendProgress('download', 10, 'Downloading Rockbox bootloader...');
+    sendLog(`[INFO] Fetching ${blUrl}`);
     await downloadFile(blUrl, blDest, (dl, tot) => {
-      const pct = Math.round((dl / tot) * 100);
-      sendProgress('bootloader', 50 + Math.round(pct * 0.1), `Downloading bootloader (${pct}%)...`);
+      sendProgress('download', 10 + Math.round((dl / tot) * 5), `Downloading bootloader (${Math.round((dl / tot) * 100)}%)...`);
     });
 
-    sendLog('[INFO] Writing bootloader to storage tracks...');
-    if (!isClassic) {
-      const flashRes = await runAdminCommand(`diskutil unmountDisk /dev/${diskId} && "${ipodpatcherPath}" /dev/${diskId} --add-bootloader "${blDest}"`);
-      if (!flashRes.success) {
-        throw new Error(`Flashing bootloader failed: ${flashRes.stderr || flashRes.stdout}`);
-      }
-      sendLog(flashRes.stdout);
-    } else {
-      // Classic DFU mode bootloader install
-      sendLog('[USER] Ensure your iPod Classic is connected in DFU mode...');
-      sendLog('[INFO] Unzipping bootloader package...');
-      const zipExtractDir = path.join(tempDir, 'ipod6g_bl');
-      fs.mkdirSync(zipExtractDir, { recursive: true });
-      await runCommand(`unzip -o "${blDest}" -d "${zipExtractDir}"`);
-      
-      const classicBlFile = path.join(zipExtractDir, 'bootloader-ipod6g.ipod');
-      if (!fs.existsSync(classicBlFile)) {
-        throw new Error('Bootloader file bootloader-ipod6g.ipod not found in downloaded package!');
-      }
-
-      sendLog('[INFO] Uploading bootstrap patch via DFU protocols...');
-      const dfuRes = await runAdminCommand(`"${mks5lbootPath}" --bl-inst "${classicBlFile}"`);
-      if (!dfuRes.success) {
-        throw new Error(`DFU installer failed: ${dfuRes.stderr || dfuRes.stdout}`);
-      }
-      sendLog(dfuRes.stdout);
-    }
-
-    // Step 4: Download Rockbox OS Payload
-    sendProgress('payload-download', 70, 'Downloading Rockbox OS payload...');
-    const rbModel = isClassic ? 'ipod6g' : model;
-    const rbUrl = `https://build.rockbox.org/data/rockbox-${rbModel}.zip`;
-    const rbDest = path.join(tempDir, `rockbox-${rbModel}.zip`);
-
-    sendLog(`[INFO] Fetching Rockbox OS archive from ${rbUrl}...`);
+    const rbUrl = `https://build.rockbox.org/data/rockbox-${model}.zip`;
+    sendLog(`[INFO] Fetching ${rbUrl}`);
     await downloadFile(rbUrl, rbDest, (dl, tot) => {
-      const pct = Math.round((dl / tot) * 100);
-      sendProgress('payload-download', 70 + Math.round(pct * 0.15), `Downloading Rockbox OS (${pct}%)...`);
+      sendProgress('download', 15 + Math.round((dl / tot) * 15), `Downloading Rockbox build (${Math.round((dl / tot) * 100)}%)...`);
     });
+    sendLog('[INFO] Downloads complete.');
 
-    // Step 5: Extract Payload & Finalize Structures
-    sendProgress('payload-extract', 90, 'Deploying payload to disk...');
-    
-    // Find mount point for FAT32 partition
-    let mountPath = `/Volumes/IPOD`;
-    sendLog('[INFO] Waiting for drive volume to mount...');
-    // Poll diskutil to see if the partition is mounted, or try mounting it
-    await runCommand(`diskutil mountDisk /dev/${diskId}`);
-    
-    let mountFound = false;
-    for (let attempts = 0; attempts < 10; attempts++) {
-      // Check both s2 (standard winpod layout) and s1 (single partition fallback)
-      for (const partSuffix of ['s2', 's1']) {
-        const mountCheck = await runCommand(`diskutil info ${diskId}${partSuffix}`);
-        if (mountCheck.success && mountCheck.stdout.includes('Mount Point:')) {
-          const match = /Mount Point:\s+(.+)/.exec(mountCheck.stdout);
-          if (match) {
-            mountPath = match[1].trim();
-            mountFound = true;
-            break;
-          }
-        }
+    // Step 3: read the real geometry from ipodpatcher (works on macpod + winpod)
+    sendProgress('inspect', 32, 'Reading iPod partition geometry...');
+    const listRes = await runAdminCommand(`"${ipodpatcherPath}" ${dev} --list 2>&1`);
+    if (listRes.stdout && listRes.stdout.trim()) sendLog(listRes.stdout.trim());
+    if (!listRes.success && !listRes.stdout) {
+      throw new Error(listRes.stderr || listRes.error || 'ipodpatcher --list failed');
+    }
+    const geom = parseIpodpatcherList(listRes.stdout || '');
+    sendLog(`[INFO] Detected: ${geom.model} (${geom.isMacpod ? 'macpod' : 'winpod'}), ${geom.sectorSize}-byte sectors.`);
+
+    // Total sectors from diskutil (authoritative), cross-checked against --list
+    const dInfo = await runCommand(`diskutil info ${diskId}`);
+    const bytesMatch = /Disk Size:.*\((\d+)\s+Bytes\)/.exec(dInfo.stdout || '');
+    if (!bytesMatch) throw new Error('Could not read the iPod disk size.');
+
+    const { totalSectors, fwStart, fwSize, dataStart, dataSize } =
+      computeLayout(geom, parseInt(bytesMatch[1], 10));
+    if (dataSize <= 0) throw new Error('Computed data partition size is invalid - aborting.');
+    sendLog(`[INFO] Layout: firmware [${fwStart}..${geom.firmware.end}], data [${dataStart}..${totalSectors - 1}] (${geom.sectorSize}-byte units).`);
+
+    // Step 4: write a clean winpod MBR (preserves firmware, never touches it)
+    sendProgress('partition', 45, 'Writing partition table (MBR)...');
+    const mbr = buildWinpodMbr(geom.sectorSize, fwStart, fwSize, dataStart, dataSize);
+    fs.writeFileSync(mbrDest, mbr);
+    sendLog('[INFO] Unmounting and writing MBR...');
+    const mbrRes = await runAdminCommand(
+      `/usr/sbin/diskutil unmountDisk force ${dev} && dd if="${mbrDest}" of=${rdev} bs=${geom.sectorSize} count=1`
+    );
+    fs.unlink(mbrDest, () => {});
+    if (!mbrRes.success) throw new Error(`Writing the partition table failed: ${mbrRes.stderr || mbrRes.error || mbrRes.stdout}`);
+
+    // Wait for the kernel to re-read the new partition table
+    sendLog('[INFO] Waiting for macOS to re-read the partition table...');
+    let tableReady = false;
+    for (let i = 0; i < 20 && !tableReady; i++) {
+      const probe = await runCommand(`diskutil info ${diskId}s2`);
+      if (probe.success && /Partition Offset/.test(probe.stdout)) tableReady = true;
+      else await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (!tableReady) throw new Error('macOS did not pick up the new partition table. Unplug/replug the iPod and run the installer again.');
+
+    // Step 5: format the data partition FAT32
+    sendProgress('partition', 58, 'Formatting data partition (FAT32)...');
+    sendLog('[INFO] Creating FAT32 filesystem on the data partition...');
+    const fmtRes = await runAdminCommand(`/usr/sbin/diskutil unmountDisk force ${dev} && /sbin/newfs_msdos -F 32 -v IPOD ${rdev}s2`);
+    if (!fmtRes.success) throw new Error(`Formatting the data partition failed: ${fmtRes.stderr || fmtRes.error || fmtRes.stdout}`);
+    sendLog('[INFO] FAT32 data partition created.');
+
+    // Step 6: patch the Rockbox bootloader into the real Apple firmware
+    sendProgress('bootloader', 70, 'Installing bootloader into Apple firmware...');
+    sendLog('[INFO] Patching bootloader with ipodpatcher --add-bootloader...');
+    const patchRes = await runAdminCommand(`/usr/sbin/diskutil unmountDisk force ${dev} ; "${ipodpatcherPath}" ${dev} --add-bootloader "${blDest}" 2>&1`);
+    if (patchRes.stdout && patchRes.stdout.trim()) sendLog(patchRes.stdout.trim());
+    if (!patchRes.success && !patchRes.stdout) throw new Error(`Bootloader install failed: ${patchRes.stderr || patchRes.error}`);
+    if (/\[ERR\]/.test(patchRes.stdout || '')) throw new Error('ipodpatcher reported an error installing the bootloader - see the log above.');
+    sendLog('[INFO] Bootloader installed (Apple firmware preserved for dual boot).');
+
+    // Step 7: extract the Rockbox build onto the FAT32 volume
+    sendProgress('payload-extract', 82, 'Mounting data partition...');
+    await runCommand(`diskutil mountDisk ${dev}`);
+    let mountPath = null;
+    for (let i = 0; i < 15 && !mountPath; i++) {
+      for (const suffix of ['s2', 's1']) {
+        const mc = await runCommand(`diskutil info ${diskId}${suffix}`);
+        const mm = /Mount Point:\s+(\/.+)/.exec(mc.stdout || '');
+        if (mm) { mountPath = mm[1].trim(); break; }
       }
-      if (mountFound) break;
-      await new Promise(r => setTimeout(r, 1000));
+      if (!mountPath) { await runCommand(`diskutil mountDisk ${dev}`); await new Promise((r) => setTimeout(r, 1000)); }
     }
-    
-    sendLog(`[INFO] Deploying components to destination: ${mountPath}`);
-    if (!fs.existsSync(mountPath)) {
-      throw new Error(`Mount point ${mountPath} is not accessible!`);
+    if (!mountPath || !fs.existsSync(mountPath)) {
+      throw new Error('The FAT32 volume did not mount. Unplug/replug the iPod and run the installer again - the bootloader and format are already done, so it will skip straight to copying files.');
     }
 
-    sendLog('[INFO] Extracting Rockbox structures...');
-    const unzipRes = await runCommand(`unzip -o "${rbDest}" -d "${mountPath}"`);
-    if (!unzipRes.success) {
-       throw new Error(`Payload extraction failed: ${unzipRes.stderr || unzipRes.stdout}`);
-    }
-    sendLog('[INFO] Extraction completed.');
-
-    sendLog('[INFO] Adjusting hidden directory visibility flags...');
+    sendProgress('payload-extract', 90, 'Extracting Rockbox onto the iPod...');
+    sendLog(`[INFO] Extracting Rockbox to ${mountPath}...`);
+    const unzipRes = await runCommand(`unzip -oq "${rbDest}" -d "${mountPath}"`);
+    if (!unzipRes.success) throw new Error(`Extracting the Rockbox files failed: ${unzipRes.stderr || unzipRes.stdout}`);
     const dotRockbox = path.join(mountPath, '.rockbox');
-    if (fs.existsSync(dotRockbox)) {
-      await runCommand(`chflags nohidden "${dotRockbox}"`);
-    }
+    if (fs.existsSync(dotRockbox)) await runCommand(`chflags nohidden "${dotRockbox}"`);
+    sendLog('[INFO] Rockbox files installed.');
 
-    sendLog('[INFO] Optimizing bootloader signatures...');
-    const srcExec = path.join(dotRockbox, 'rockbox.ipod');
-    const destExec = path.join(mountPath, 'bootloader.ipod');
-    if (fs.existsSync(srcExec)) {
-      fs.copyFileSync(srcExec, destExec);
-      sendLog('[INFO] bootloader.ipod successfully mirrored to root level.');
-    } else {
-      sendLog('[WARN] rockbox.ipod was not found in the extracted files. Dual-boot might need stock fallback.');
-    }
-
-    // Step 6: Finished
+    // Done
     sendProgress('complete', 100, 'Installation successful!');
-    sendLog('[INFO] Cleanup temporary download objects...');
+    sendLog('[INFO] Done! Eject the iPod in Finder, unplug it, then reset: toggle HOLD off and hold MENU+SELECT for ~6 seconds.');
+    sendLog('[INFO] Dual boot: hold MENU during the reset (or flip HOLD on right after) to start the original Apple firmware instead.');
     fs.unlink(blDest, () => {});
     fs.unlink(rbDest, () => {});
-    
-    // Reload agents
-    exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPDeviceDiscoveryAgent.plist 2>/dev/null');
-    exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPLibraryAgent.plist 2>/dev/null');
+    reloadAgents();
 
   } catch (err) {
-    let errMsg = err.message || 'Unknown error occurred';
+    const errMsg = err.message || 'Unknown error';
     let displayMsg = 'Installation failed!';
-    if (errMsg.includes('Operation not permitted') || errMsg.includes('Permission denied')) {
+
+    if (errMsg === 'NO_FIRMWARE') {
+      displayMsg = 'No Apple firmware found on this iPod';
+      sendLog('\n[HELP] This iPod has no valid Apple firmware on it (common on freshly flash-modded carts).');
+      sendLog('[HELP] Rockbox installs *alongside* the Apple firmware, so it has to exist first.');
+      sendLog('[HELP] Fix: restore the iPod once with Finder (or iTunes/Apple Devices), let it boot to the Apple menu, then run this installer again.\n');
+      sendProgress('error', 0, displayMsg);
+      reloadAgents();
+      return;
+    }
+    if (errMsg.includes('User canceled') || errMsg.includes('-128')) {
+      displayMsg = 'Administrator authorization was cancelled';
+      sendLog('[HELP] The macOS password prompt was cancelled. Run the install again and enter your password to allow raw disk access.');
+    } else if (errMsg.includes('Resource busy')) {
+      displayMsg = 'The iPod disk is busy';
+      sendLog('[HELP] Something else is using the iPod (Finder, Music, or a stuck mount). Unplug/replug it and try again.');
+    } else if (errMsg.includes('Operation not permitted') || errMsg.includes('Permission denied') || errMsg.includes('not permitted')) {
       displayMsg = 'Full Disk Access permission required';
-      sendLog('\n[HELP] 🔒 macOS Full Disk Access required!');
-      sendLog('[HELP] macOS prevents writing directly to raw disk sectors unless the parent process has Full Disk Access.');
-      sendLog('[HELP] To resolve this:');
-      sendLog('[HELP] 1. Open macOS System Settings.');
-      sendLog('[HELP] 2. Navigate to "Privacy & Security" > "Full Disk Access".');
-      sendLog('[HELP] 3. Toggle ON the checkbox for "Terminal" (or whichever terminal/IDE app you used to run this).');
-      sendLog('[HELP] 4. Restart this application and try again.\n');
+      sendLog('\n[HELP] macOS blocked raw disk access. MacRockPod needs Full Disk Access.');
+      sendLog('[HELP] 1. Open System Settings > Privacy & Security > Full Disk Access.');
+      sendLog('[HELP] 2. Turn ON the toggle for "MacRockPod".');
+      sendLog('[HELP] 3. Quit MacRockPod completely and reopen it, then try again.\n');
     }
     sendLog(`[FATAL ERROR] ${errMsg}`);
     sendProgress('error', 0, displayMsg);
-    
-    // Reload agents on failure too
-    exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPDeviceDiscoveryAgent.plist 2>/dev/null');
-    exec('launchctl load -w /System/Library/LaunchAgents/com.apple.AMPLibraryAgent.plist 2>/dev/null');
+    reloadAgents();
   }
 });

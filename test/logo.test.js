@@ -52,7 +52,7 @@ const ok = (name) => { console.log(`  ok - ${name}`); passed++; };
   ok('rejects RGBA of the wrong length');
 }
 
-const { findStockLogo, replaceLogo } = require('../lib/logo');
+const { findStockLogo, replaceLogo, resolveTargetOffset } = require('../lib/logo');
 
 // ---- findStockLogo: single match, absent, duplicate ----
 {
@@ -95,6 +95,44 @@ const { findStockLogo, replaceLogo } = require('../lib/logo');
   const blob = Buffer.alloc(LOGO_BYTES, 1);
   assert.throws(() => replaceLogo(Buffer.alloc(LOGO_BYTES + 10), 20, blob), /out of bounds/);
   ok('replaceLogo rejects an out-of-bounds offset');
+}
+
+// ---- resolveTargetOffset: stock present -> stock source ----
+{
+  const stock = Buffer.alloc(LOGO_BYTES, 0x5A);
+  const fw = Buffer.concat([Buffer.alloc(200), stock, Buffer.alloc(200)]);
+  const r = resolveTargetOffset(fw, stock, null);
+  assert.strictEqual(r.offset, 200);
+  assert.strictEqual(r.source, 'stock');
+  assert.ok(r.original.equals(stock));
+  ok('resolveTargetOffset uses the stock blob when present');
+}
+// ---- stock absent + valid sidecar -> sidecar source ----
+{
+  const stock = Buffer.alloc(LOGO_BYTES, 0x5A);     // not present in fw
+  const fw = Buffer.alloc(63000, 0x00);
+  const original = Buffer.alloc(LOGO_BYTES, 0x11);
+  const sidecar = { offset: 100, firmwareBytes: 63000, originalBlobBase64: original.toString('base64') };
+  const r = resolveTargetOffset(fw, stock, sidecar);
+  assert.strictEqual(r.offset, 100);
+  assert.strictEqual(r.source, 'sidecar');
+  assert.ok(r.original.equals(original));
+  ok('resolveTargetOffset falls back to a valid sidecar');
+}
+// ---- stock absent + no/invalid sidecar -> throws ----
+{
+  const stock = Buffer.alloc(LOGO_BYTES, 0x5A);
+  const fw = Buffer.alloc(63000, 0x00);
+  assert.throws(() => resolveTargetOffset(fw, stock, null), /could not locate/i);
+  ok('resolveTargetOffset throws when neither stock nor sidecar resolves');
+}
+// ---- sidecar offset out of bounds is ignored -> throws ----
+{
+  const stock = Buffer.alloc(LOGO_BYTES, 0x5A);
+  const fw = Buffer.alloc(63000, 0x00);
+  const bad = { offset: 60000, firmwareBytes: 63000, originalBlobBase64: '' }; // 60000+62720 > 63000
+  assert.throws(() => resolveTargetOffset(fw, stock, bad), /could not locate/i);
+  ok('resolveTargetOffset ignores an out-of-bounds sidecar offset');
 }
 
 console.log(`\n${passed} assertions passed.`);

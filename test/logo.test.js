@@ -52,7 +52,7 @@ const ok = (name) => { console.log(`  ok - ${name}`); passed++; };
   ok('rejects RGBA of the wrong length');
 }
 
-const { findStockLogo } = require('../lib/logo');
+const { findStockLogo, replaceLogo } = require('../lib/logo');
 
 // ---- findStockLogo: single match, absent, duplicate ----
 {
@@ -72,6 +72,29 @@ const { findStockLogo } = require('../lib/logo');
   const fw = Buffer.concat([needle, Buffer.alloc(10), needle]);
   assert.throws(() => findStockLogo(fw, needle), /more than once/);
   ok('findStockLogo throws on a duplicate match');
+}
+
+// ---- replaceLogo: in-place overwrite, length preserved, bounds checked ----
+{
+  const fw = Buffer.alloc(70000, 0x00);
+  const blob = Buffer.alloc(LOGO_BYTES, 0xAB);
+  const out = replaceLogo(fw, 100, blob);
+  assert.strictEqual(out.length, fw.length);           // same size
+  assert.strictEqual(out[99], 0x00);                   // byte before untouched
+  assert.strictEqual(out[100], 0xAB);                  // blob start
+  assert.strictEqual(out[100 + LOGO_BYTES - 1], 0xAB); // blob end
+  assert.strictEqual(out[100 + LOGO_BYTES], 0x00);     // byte after untouched
+  assert.strictEqual(fw[100], 0x00);                   // original not mutated
+  ok('replaceLogo overwrites in place and preserves length');
+}
+{
+  assert.throws(() => replaceLogo(Buffer.alloc(70000), 100, Buffer.alloc(10)), /must be 62720 bytes/);
+  ok('replaceLogo rejects a wrong-length blob');
+}
+{
+  const blob = Buffer.alloc(LOGO_BYTES, 1);
+  assert.throws(() => replaceLogo(Buffer.alloc(LOGO_BYTES + 10), 20, blob), /out of bounds/);
+  ok('replaceLogo rejects an out-of-bounds offset');
 }
 
 console.log(`\n${passed} assertions passed.`);

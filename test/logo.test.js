@@ -52,4 +52,26 @@ const ok = (name) => { console.log(`  ok - ${name}`); passed++; };
   ok('rejects RGBA of the wrong length');
 }
 
+const { findStockLogo } = require('../lib/logo');
+
+// ---- findStockLogo: single match, absent, duplicate ----
+{
+  const needle = Buffer.from([0xDE, 0xAD, 0xBE, 0xEF]);
+  const fw = Buffer.concat([Buffer.alloc(50), needle, Buffer.alloc(50)]);
+  assert.strictEqual(findStockLogo(fw, needle), 50);
+  ok('findStockLogo returns the single offset');
+}
+{
+  const needle = Buffer.from([1, 2, 3, 4]);
+  const fw = Buffer.alloc(200); // all zeros, needle absent
+  assert.strictEqual(findStockLogo(fw, needle), -1);
+  ok('findStockLogo returns -1 when absent');
+}
+{
+  const needle = Buffer.from([7, 7]);
+  const fw = Buffer.concat([needle, Buffer.alloc(10), needle]);
+  assert.throws(() => findStockLogo(fw, needle), /more than once/);
+  ok('findStockLogo throws on a duplicate match');
+}
+
 console.log(`\n${passed} assertions passed.`);

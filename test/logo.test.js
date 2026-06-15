@@ -5,7 +5,7 @@
 
 const assert = require('assert');
 const {
-  LOGO_WIDTH, LOGO_HEIGHT, LOGO_BYTES, RGBA_BYTES,
+  LOGO_WIDTH, LOGO_HEIGHT, LOGO_PIXELS, LOGO_BYTES, RGBA_BYTES,
   packRgb565LE,
 } = require('../lib/logo');
 
@@ -16,6 +16,7 @@ const ok = (name) => { console.log(`  ok - ${name}`); passed++; };
 {
   assert.strictEqual(LOGO_WIDTH, 320);
   assert.strictEqual(LOGO_HEIGHT, 98);
+  assert.strictEqual(LOGO_PIXELS, 31360);
   assert.strictEqual(LOGO_BYTES, 62720);
   assert.strictEqual(RGBA_BYTES, 125440);
   ok('exports the iPod Video logo dimensions');

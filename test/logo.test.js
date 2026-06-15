@@ -135,5 +135,13 @@ const { findStockLogo, replaceLogo, resolveTargetOffset } = require('../lib/logo
   assert.throws(() => resolveTargetOffset(fw, stock, bad), /could not locate/i);
   ok('resolveTargetOffset ignores an out-of-bounds sidecar offset');
 }
+// ---- valid sidecar offset but corrupt/short saved original -> throws ----
+{
+  const stock = Buffer.alloc(LOGO_BYTES, 0x5A);
+  const fw = Buffer.alloc(63000, 0x00);
+  const corrupt = { offset: 100, firmwareBytes: 63000, originalBlobBase64: 'AAAA' }; // decodes to 3 bytes
+  assert.throws(() => resolveTargetOffset(fw, stock, corrupt), /could not locate/i);
+  ok('resolveTargetOffset rejects a sidecar with a wrong-length saved original');
+}
 
 console.log(`\n${passed} assertions passed.`);

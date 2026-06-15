@@ -164,13 +164,19 @@ function writeSidecar(mountPath, data) {
   fs.writeFileSync(sidecarPath(mountPath), JSON.stringify(data, null, 2));
 }
 
-// Write `patched` over the firmware atomically (temp file on the same volume,
-// then rename) so a failure can never leave a half-written rockbox.ipod.
+// Write `patched` over the firmware atomically (temp file in the same dir,
+// then rename) so a failure can never leave a half-written rockbox.ipod. Clean
+// up the temp file if the write fails partway (e.g. disk full).
 function writeFirmwareAtomic(mountPath, patched) {
   const fwPath = firmwarePath(mountPath);
   const tmp = fwPath + '.macrockpod.tmp';
-  fs.writeFileSync(tmp, patched);
-  fs.renameSync(tmp, fwPath);
+  try {
+    fs.writeFileSync(tmp, patched);
+    fs.renameSync(tmp, fwPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    throw err;
+  }
 }
 
 ipcMain.handle('change-logo', async (_event, { mountPath, rgba }) => {
@@ -188,8 +194,12 @@ ipcMain.handle('change-logo', async (_event, { mountPath, rgba }) => {
       ? existing
       : { offset, firmwareBytes: firmware.length, originalBlobBase64: original.toString('base64') };
 
-    writeFirmwareAtomic(mountPath, replaceLogo(firmware, offset, newBlob));
+    // Write the sidecar BEFORE patching the firmware: if the firmware write then
+    // fails, the firmware is untouched and the (stock-pointing) sidecar is
+    // harmless; if we wrote firmware first and the sidecar write failed, the
+    // stock blob would be gone with no saved original - leaving the logo stuck.
     writeSidecar(mountPath, sidecar);
+    writeFirmwareAtomic(mountPath, replaceLogo(firmware, offset, newBlob));
     return { success: true, offset, source };
   } catch (err) {
     return { success: false, error: err.message };
@@ -203,6 +213,7 @@ ipcMain.handle('restore-logo', async (_event, { mountPath }) => {
     if (sidecar &&
         Number.isInteger(sidecar.offset) &&
         sidecar.firmwareBytes === firmware.length &&
+        sidecar.offset >= 0 &&
         sidecar.offset + LOGO_BYTES <= firmware.length) {
       const original = Buffer.from(sidecar.originalBlobBase64 || '', 'base64');
       if (original.length !== LOGO_BYTES) throw new Error('Saved original logo is corrupt.');

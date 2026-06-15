@@ -4,6 +4,7 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const https = require('https');
 const { parseIpodpatcherList, buildWinpodMbr, computeLayout } = require('./lib/geometry');
+const { packRgb565LE, resolveTargetOffset, replaceLogo, findStockLogo, LOGO_BYTES } = require('./lib/logo');
 
 let mainWindow;
 
@@ -75,7 +76,8 @@ function reloadAgents() {
 // Device scan
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('scan-ipods', async () => {
+// Discover connected iPod disks (shared by the installer and the logo tool).
+async function discoverIpods() {
   const listRes = await runCommand('diskutil list');
   if (!listRes.success) return [];
 
@@ -102,7 +104,6 @@ ipcMain.handle('scan-ipods', async () => {
                    content.toLowerCase().includes('apple_mdfw');
     if (!isIpod) continue;
 
-    // This disk's own partition scheme decides macpod (APM) vs winpod (MBR)
     const isMacPod = content.includes('Apple_partition_scheme');
 
     ipods.push({
@@ -114,6 +115,109 @@ ipcMain.handle('scan-ipods', async () => {
     });
   }
   return ipods;
+}
+
+// Find the mount point of a disk's data volume that contains a Rockbox install.
+async function findRockboxMount(diskId) {
+  for (const suffix of ['s2', 's1']) {
+    const mc = await runCommand(`diskutil info ${diskId}${suffix}`);
+    const mm = /Mount Point:\s+(\/.+)/.exec(mc.stdout || '');
+    if (mm) {
+      const mountPath = mm[1].trim();
+      if (fs.existsSync(path.join(mountPath, '.rockbox', 'rockbox.ipod'))) {
+        return mountPath;
+      }
+    }
+  }
+  return null;
+}
+
+ipcMain.handle('scan-ipods', async () => discoverIpods());
+
+// Like scan-ipods, but only iPods that already have Rockbox installed, with the
+// mount path of the volume holding .rockbox/rockbox.ipod.
+ipcMain.handle('scan-rockbox-ipods', async () => {
+  const ipods = await discoverIpods();
+  const result = [];
+  for (const ip of ipods) {
+    const mountPath = await findRockboxMount(ip.id);
+    if (mountPath) result.push({ ...ip, mountPath });
+  }
+  return result;
+});
+
+// ---------------------------------------------------------------------------
+// Boot logo swap (standalone re-skin of an already-installed iPod)
+// ---------------------------------------------------------------------------
+
+function stockLogoBlob() {
+  return fs.readFileSync(path.join(__dirname, 'assets', 'stock-logo-ipodvideo.bin'));
+}
+function firmwarePath(mountPath) { return path.join(mountPath, '.rockbox', 'rockbox.ipod'); }
+function sidecarPath(mountPath) { return path.join(mountPath, '.rockbox', '.macrockpod-logo.json'); }
+
+function readSidecar(mountPath) {
+  try { return JSON.parse(fs.readFileSync(sidecarPath(mountPath), 'utf8')); }
+  catch (_) { return null; }
+}
+function writeSidecar(mountPath, data) {
+  fs.writeFileSync(sidecarPath(mountPath), JSON.stringify(data, null, 2));
+}
+
+// Write `patched` over the firmware atomically (temp file on the same volume,
+// then rename) so a failure can never leave a half-written rockbox.ipod.
+function writeFirmwareAtomic(mountPath, patched) {
+  const fwPath = firmwarePath(mountPath);
+  const tmp = fwPath + '.macrockpod.tmp';
+  fs.writeFileSync(tmp, patched);
+  fs.renameSync(tmp, fwPath);
+}
+
+ipcMain.handle('change-logo', async (_event, { mountPath, rgba }) => {
+  try {
+    const firmware = fs.readFileSync(firmwarePath(mountPath));
+    const newBlob = packRgb565LE(Buffer.from(rgba)); // rgba arrives as an ArrayBuffer
+    if (newBlob.length !== LOGO_BYTES) throw new Error('Internal: bad converted logo size.');
+
+    const stock = stockLogoBlob();
+    const existing = readSidecar(mountPath);
+    const { offset, source, original } = resolveTargetOffset(firmware, stock, existing);
+
+    // Persist the true-original bytes once so re-swaps and restore keep working.
+    const sidecar = (existing && existing.offset === offset)
+      ? existing
+      : { offset, firmwareBytes: firmware.length, originalBlobBase64: original.toString('base64') };
+
+    writeFirmwareAtomic(mountPath, replaceLogo(firmware, offset, newBlob));
+    writeSidecar(mountPath, sidecar);
+    return { success: true, offset, source };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('restore-logo', async (_event, { mountPath }) => {
+  try {
+    const firmware = fs.readFileSync(firmwarePath(mountPath));
+    const sidecar = readSidecar(mountPath);
+    if (sidecar &&
+        Number.isInteger(sidecar.offset) &&
+        sidecar.firmwareBytes === firmware.length &&
+        sidecar.offset + LOGO_BYTES <= firmware.length) {
+      const original = Buffer.from(sidecar.originalBlobBase64 || '', 'base64');
+      if (original.length !== LOGO_BYTES) throw new Error('Saved original logo is corrupt.');
+      writeFirmwareAtomic(mountPath, replaceLogo(firmware, sidecar.offset, original));
+      try { fs.unlinkSync(sidecarPath(mountPath)); } catch (_) {}
+      return { success: true, restored: true };
+    }
+    // No sidecar: if the stock logo is already present, there is nothing to undo.
+    if (findStockLogo(firmware, stockLogoBlob()) !== -1) {
+      return { success: true, alreadyStock: true };
+    }
+    throw new Error('No saved original logo to restore on this iPod.');
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 ipcMain.handle('is-root', () => process.getuid && process.getuid() === 0);

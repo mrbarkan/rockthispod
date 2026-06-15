@@ -148,6 +148,81 @@ const { findStockLogo, replaceLogo, resolveTargetOffset } = require('../lib/logo
   ok('resolveTargetOffset rejects a sidecar with a wrong-length saved original');
 }
 
+const {
+  isIpodVideoFirmware, ipodChecksum, fixIpodChecksum, applyLogoPatch,
+  IPOD_VIDEO_MODEL_NUMBER, IPOD_HEADER_BYTES,
+} = require('../lib/logo');
+
+// Build a minimal but format-valid .ipod image: 8-byte header (BE checksum +
+// "ipvd") followed by the body, with `logoBytes` placed at firmware-absolute
+// offset `fwOffset` (>= header size) and a correct header checksum. Mirrors the
+// real rockbox.ipod structure.
+function makeFakeFirmware(logoBytes, fwOffset) {
+  const fw = Buffer.alloc(fwOffset + LOGO_BYTES + 64, 0xA5);
+  fw.write('ipvd', 4, 'latin1');
+  logoBytes.copy(fw, fwOffset);
+  return fixIpodChecksum(fw); // valid checksum to start, like a real image
+}
+
+// ---- isIpodVideoFirmware ----
+{
+  const fw = makeFakeFirmware(Buffer.alloc(LOGO_BYTES, 1), 100);
+  assert.strictEqual(isIpodVideoFirmware(fw), true);
+  const notIpod = Buffer.from(fw); notIpod.write('xxxx', 4, 'latin1');
+  assert.strictEqual(isIpodVideoFirmware(notIpod), false);
+  ok('isIpodVideoFirmware detects the "ipvd" model header');
+}
+
+// ---- ipodChecksum / fixIpodChecksum: MODEL_NUMBER + sum(body), big-endian ----
+{
+  const fw = makeFakeFirmware(Buffer.alloc(LOGO_BYTES, 0), 8);
+  // header was set by fixIpodChecksum -> must already equal ipodChecksum
+  assert.strictEqual(fw.readUInt32BE(0), ipodChecksum(fw));
+  // manual cross-check of the algorithm
+  let sum = IPOD_VIDEO_MODEL_NUMBER >>> 0;
+  for (let i = IPOD_HEADER_BYTES; i < fw.length; i++) sum = (sum + fw[i]) >>> 0;
+  assert.strictEqual(fw.readUInt32BE(0), sum >>> 0);
+  ok('ipodChecksum = (MODEL_NUMBER + sum of body bytes), stored big-endian');
+}
+{
+  const fw = makeFakeFirmware(Buffer.alloc(LOGO_BYTES, 0), 8);
+  const tampered = Buffer.from(fw);
+  tampered[IPOD_HEADER_BYTES + 5] ^= 0xFF; // change a body byte, leave header stale
+  assert.notStrictEqual(tampered.readUInt32BE(0), ipodChecksum(tampered)); // now invalid
+  const fixed = fixIpodChecksum(tampered);
+  assert.strictEqual(fixed.readUInt32BE(0), ipodChecksum(fixed));          // valid again
+  assert.ok(fixIpodChecksum(fixed).equals(fixed));                         // idempotent
+  ok('fixIpodChecksum repairs a stale header and is idempotent');
+}
+
+// ---- applyLogoPatch: REGRESSION for "Bad checksum" — patched image must be VALID ----
+{
+  const stock = Buffer.alloc(LOGO_BYTES, 0x10);
+  const offset = 256;
+  const fw = makeFakeFirmware(stock, offset);
+  assert.strictEqual(fw.readUInt32BE(0), ipodChecksum(fw)); // valid before
+
+  const newLogo = Buffer.alloc(LOGO_BYTES, 0x7E);
+  const patched = applyLogoPatch(fw, offset, newLogo);
+
+  assert.strictEqual(patched.length, fw.length, 'size unchanged');
+  assert.ok(patched.subarray(offset, offset + LOGO_BYTES).equals(newLogo), 'new logo written');
+  // The bug this guards against: header checksum must match the new body.
+  assert.strictEqual(patched.readUInt32BE(0), ipodChecksum(patched),
+    'patched firmware passes the bootloader checksum');
+  ok('applyLogoPatch writes the logo AND keeps the firmware checksum valid');
+}
+{
+  // restore path: patch original back -> identical to the untouched image
+  const stock = Buffer.alloc(LOGO_BYTES, 0x10);
+  const offset = 256;
+  const fw = makeFakeFirmware(stock, offset);
+  const swapped = applyLogoPatch(fw, offset, Buffer.alloc(LOGO_BYTES, 0x7E));
+  const restored = applyLogoPatch(swapped, offset, stock);
+  assert.ok(restored.equals(fw), 'restore reproduces the original image byte-for-byte');
+  ok('applyLogoPatch round-trips: swap then restore equals the original');
+}
+
 // ---- golden: shipped asset matches the validated logo exactly ----
 {
   const blob = fs.readFileSync(path.join(__dirname, '..', 'assets', 'stock-logo-ipodvideo.bin'));

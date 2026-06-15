@@ -102,8 +102,9 @@ The bundled `bin/ipodpatcher` is built from the Rockbox source in `rockbox-src/`
 The iPod Video boot logo is `rockboxlogo.320x98x16.bmp`, embedded uncompressed in the main firmware `rockbox.ipod` as **RGB565, little‑endian** (320 × 98 = 62,720 bytes). The standalone logo tool:
 1. Decodes and fits the chosen image to 320 × 98 on a `<canvas>` (letterbox/crop/stretch), then hands the raw RGBA to the main process — so it needs no image library and no `sips`.
 2. Packs it to the native RGB565 format ([`lib/logo.js`](lib/logo.js)).
-3. Locates the **stock logo** in `rockbox.ipod` by searching for the shipped reference blob [`assets/stock-logo-ipodvideo.bin`](assets/stock-logo-ipodvideo.bin) (must match exactly once), then overwrites those bytes in place — same length, so the firmware size and layout are untouched — via a temp‑file + atomic rename.
-4. Saves the original bytes + offset to `.rockbox/.macrockpod-logo.json` on the iPod so re‑swapping and **Restore Original** keep working after the stock logo is gone.
+3. Locates the **stock logo** in `rockbox.ipod` by searching for the shipped reference blob [`assets/stock-logo-ipodvideo.bin`](assets/stock-logo-ipodvideo.bin) (must match exactly once), then overwrites those bytes in place — same length, so the firmware size and layout are untouched.
+4. **Recomputes the firmware checksum.** `rockbox.ipod` is a `scramble -add` image: an 8‑byte header (big‑endian `MODEL_NUMBER + sum of every body byte`, then the model name `ipvd`) followed by the body. The bootloader refuses to load it with `Bad checksum` if the header doesn't match the body, so after patching the logo the checksum is recomputed (`MODEL_NUMBER` = 5 for iPod Video) and rewritten, then the file is saved via a temp‑file + atomic rename.
+5. Saves the original bytes + offset to `.rockbox/.macrockpod-logo.json` on the iPod so re‑swapping and **Restore Original** keep working after the stock logo is gone.
 
 It writes only the mounted FAT32 volume as the user, so unlike the installer it needs **no admin password or Full Disk Access**. The reference blob is regenerated from the Rockbox source with `node build/generate-stock-logo.js`; `npm test` golden‑checks it against a pinned sha256. The packer/locator/replacer are unit‑tested in [`test/logo.test.js`](test/logo.test.js).
 

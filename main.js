@@ -4,7 +4,7 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const https = require('https');
 const { parseIpodpatcherList, buildWinpodMbr, computeLayout } = require('./lib/geometry');
-const { packRgb565LE, resolveTargetOffset, replaceLogo, findStockLogo, LOGO_BYTES } = require('./lib/logo');
+const { packRgb565LE, resolveTargetOffset, applyLogoPatch, findStockLogo, isIpodVideoFirmware, LOGO_BYTES } = require('./lib/logo');
 
 let mainWindow;
 
@@ -182,6 +182,7 @@ function writeFirmwareAtomic(mountPath, patched) {
 ipcMain.handle('change-logo', async (_event, { mountPath, rgba }) => {
   try {
     const firmware = fs.readFileSync(firmwarePath(mountPath));
+    if (!isIpodVideoFirmware(firmware)) throw new Error('This is not an iPod Video Rockbox firmware (rockbox.ipod).');
     const newBlob = packRgb565LE(Buffer.from(rgba)); // rgba arrives as an ArrayBuffer
     if (newBlob.length !== LOGO_BYTES) throw new Error('Internal: bad converted logo size.');
 
@@ -199,7 +200,9 @@ ipcMain.handle('change-logo', async (_event, { mountPath, rgba }) => {
     // harmless; if we wrote firmware first and the sidecar write failed, the
     // stock blob would be gone with no saved original - leaving the logo stuck.
     writeSidecar(mountPath, sidecar);
-    writeFirmwareAtomic(mountPath, replaceLogo(firmware, offset, newBlob));
+    // applyLogoPatch recomputes the firmware checksum after writing the logo -
+    // without it the bootloader rejects the image with "Bad checksum".
+    writeFirmwareAtomic(mountPath, applyLogoPatch(firmware, offset, newBlob));
     return { success: true, offset, source };
   } catch (err) {
     return { success: false, error: err.message };
@@ -209,6 +212,7 @@ ipcMain.handle('change-logo', async (_event, { mountPath, rgba }) => {
 ipcMain.handle('restore-logo', async (_event, { mountPath }) => {
   try {
     const firmware = fs.readFileSync(firmwarePath(mountPath));
+    if (!isIpodVideoFirmware(firmware)) throw new Error('This is not an iPod Video Rockbox firmware (rockbox.ipod).');
     const sidecar = readSidecar(mountPath);
     if (sidecar &&
         Number.isInteger(sidecar.offset) &&
@@ -217,7 +221,8 @@ ipcMain.handle('restore-logo', async (_event, { mountPath }) => {
         sidecar.offset + LOGO_BYTES <= firmware.length) {
       const original = Buffer.from(sidecar.originalBlobBase64 || '', 'base64');
       if (original.length !== LOGO_BYTES) throw new Error('Saved original logo is corrupt.');
-      writeFirmwareAtomic(mountPath, replaceLogo(firmware, sidecar.offset, original));
+      // applyLogoPatch recomputes the checksum so the restored image is valid.
+      writeFirmwareAtomic(mountPath, applyLogoPatch(firmware, sidecar.offset, original));
       try { fs.unlinkSync(sidecarPath(mountPath)); } catch (_) {}
       return { success: true, restored: true };
     }

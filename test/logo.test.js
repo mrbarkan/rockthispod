@@ -4,6 +4,10 @@
 // Run: node test/logo.test.js
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { decodeBmp24ToRgba } = require('../build/generate-stock-logo');
 const {
   LOGO_WIDTH, LOGO_HEIGHT, LOGO_PIXELS, LOGO_BYTES, RGBA_BYTES,
   packRgb565LE,
@@ -142,6 +146,32 @@ const { findStockLogo, replaceLogo, resolveTargetOffset } = require('../lib/logo
   const corrupt = { offset: 100, firmwareBytes: 63000, originalBlobBase64: 'AAAA' }; // decodes to 3 bytes
   assert.throws(() => resolveTargetOffset(fw, stock, corrupt), /could not locate/i);
   ok('resolveTargetOffset rejects a sidecar with a wrong-length saved original');
+}
+
+// ---- golden: shipped asset matches the validated logo exactly ----
+{
+  const blob = fs.readFileSync(path.join(__dirname, '..', 'assets', 'stock-logo-ipodvideo.bin'));
+  assert.strictEqual(blob.length, LOGO_BYTES);
+  const sha = crypto.createHash('sha256').update(blob).digest('hex');
+  assert.strictEqual(sha, '1357a50d0da58a5fbd83c66126b22d65b2c8677b8dbc54a74b81c817d778afa9');
+  ok('shipped stock-logo asset matches the validated sha256');
+}
+// ---- the asset is reproducible from source via the runtime packer ----
+// rockbox-src/ is git-ignored (tracked only via patches/), so it is absent on a
+// fresh clone / CI. Run this check only when the source BMP is present; the
+// sha256 check above is the always-on guard.
+{
+  const srcBmp = path.join(__dirname, '..', 'rockbox-src', 'apps', 'bitmaps',
+    'native', 'rockboxlogo.320x98x16.bmp');
+  if (fs.existsSync(srcBmp)) {
+    const { rgba } = decodeBmp24ToRgba(fs.readFileSync(srcBmp));
+    const regenerated = packRgb565LE(rgba);
+    const shipped = fs.readFileSync(path.join(__dirname, '..', 'assets', 'stock-logo-ipodvideo.bin'));
+    assert.ok(regenerated.equals(shipped));
+    ok('packer reproduces the shipped asset from the source BMP');
+  } else {
+    console.log('  skip - source BMP absent (rockbox-src not checked out)');
+  }
 }
 
 console.log(`\n${passed} assertions passed.`);

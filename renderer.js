@@ -300,16 +300,16 @@ document.addEventListener('DOMContentLoaded', () => {
     logoDeviceList.innerHTML = `
       <div class="loading-spinner-container"><div class="spinner"></div>
       <p>Scanning for Rockbox iPods...</p></div>`;
-    let devices = [];
-    try { devices = await window.electronAPI.scanRockboxIpods(); } catch (_) {}
+    let rockboxDevices = [];
+    try { rockboxDevices = await window.electronAPI.scanRockboxIpods(); } catch (_) {}
     logoDeviceList.innerHTML = '';
-    if (!devices.length) {
+    if (!rockboxDevices.length) {
       logoDeviceList.innerHTML = `
         <div class="loading-spinner-container">
         <p style="color: var(--text-muted);">No Rockbox iPod found. Plug it in with HOLD ON, then Rescan.</p></div>`;
       return;
     }
-    devices.forEach((dev) => {
+    rockboxDevices.forEach((dev) => {
       const card = document.createElement('div');
       card.className = 'device-card';
       card.innerHTML = `
@@ -364,9 +364,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function redrawPreview() {
     const W = 320, H = 98;
-    previewCtx.clearRect(0, 0, W, H);
     previewCtx.fillStyle = currentPad();
-    previewCtx.fillRect(0, 0, W, H);
+    previewCtx.fillRect(0, 0, W, H); // opaque fill covers the whole canvas
+
     if (!logoImage) return;
     const iw = logoImage.width, ih = logoImage.height;
     const fit = currentFit();

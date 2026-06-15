@@ -36,6 +36,19 @@ The original Apple firmware is preserved. To start it instead of Rockbox, hold *
 ### Syncing music afterward
 On macOS, copy music with the iPod in **Apple Disk Mode** for best stability on flash adapters: turn the **HOLD switch ON** before plugging in, which boots the Apple firmware's USB layer rather than Rockbox's. Then drag files onto the iPod's drive in Finder.
 
+### Changing the boot logo
+Once Rockbox is installed you can replace the logo that shows when it starts up, with any image you like — no reinstall, no password.
+
+1. Connect the iPod with the **HOLD switch ON** so it mounts in disk mode.
+2. Open the app and choose **Change Boot Logo** on the home screen.
+3. Pick your iPod, then **Choose Image…** (PNG, JPG, etc.). The logo area is **320 × 98** pixels — pick how your image fits it:
+   - **Letterbox** — whole image, padded with a background colour you choose.
+   - **Crop** — fills the area, trimming the overflow.
+   - **Stretch** — forced to fit, ignoring aspect ratio.
+4. The preview shows exactly what will be written. Click **Apply Logo**, then **Eject** the iPod and reset it (HOLD off, hold **MENU + SELECT** ~6 seconds) to see it.
+
+**Restore Original** puts the stock Rockbox logo back at any time. This is non‑destructive — it only rewrites the logo bytes inside `rockbox.ipod`, never the partition layout or your music. It works on supported Rockbox builds (the app locates the known stock logo); if a future build changes the logo it will say so and skip rather than risk the firmware.
+
 ### Troubleshooting
 | Symptom | Fix |
 | --- | --- |
@@ -44,6 +57,8 @@ On macOS, copy music with the iPod in **Apple Disk Mode** for best stability on 
 | "The iPod disk is busy" | Quit Finder/Music windows touching the iPod, unplug/replug, retry. |
 | Boots to **`ATA error: -11`** | Known iFlash/SSD adapter issue with the stock bootloader — open an issue; the fix is swapping in a newer bootloader (non‑destructive). |
 | Nothing detected | Put the iPod in Disk Mode (see step 4) and click **Rescan**. |
+| Boot logo: "No Rockbox iPod found" | The logo tool only lists iPods that already run Rockbox. Connect with **HOLD on** and **Rescan**. |
+| Boot logo: "Could not locate the boot logo…" | This Rockbox build's logo differs from the known stock one, so the swap is unavailable on it. Nothing was changed. |
 
 ---
 
@@ -82,6 +97,16 @@ The 5.5G presents **2048‑byte logical sectors** over USB, so MBR partition ent
 6. Extracts the current Rockbox build onto the FAT32 volume.
 
 The bundled `bin/ipodpatcher` is built from the Rockbox source in `rockbox-src/` (the upstream `utils/ipodpatcher`).
+
+### How the boot-logo swap works
+The iPod Video boot logo is `rockboxlogo.320x98x16.bmp`, embedded uncompressed in the main firmware `rockbox.ipod` as **RGB565, little‑endian** (320 × 98 = 62,720 bytes). The standalone logo tool:
+1. Decodes and fits the chosen image to 320 × 98 on a `<canvas>` (letterbox/crop/stretch), then hands the raw RGBA to the main process — so it needs no image library and no `sips`.
+2. Packs it to the native RGB565 format ([`lib/logo.js`](lib/logo.js)).
+3. Locates the **stock logo** in `rockbox.ipod` by searching for the shipped reference blob [`assets/stock-logo-ipodvideo.bin`](assets/stock-logo-ipodvideo.bin) (must match exactly once), then overwrites those bytes in place — same length, so the firmware size and layout are untouched.
+4. **Recomputes the firmware checksum.** `rockbox.ipod` is a `scramble -add` image: an 8‑byte header (big‑endian `MODEL_NUMBER + sum of every body byte`, then the model name `ipvd`) followed by the body. The bootloader refuses to load it with `Bad checksum` if the header doesn't match the body, so after patching the logo the checksum is recomputed (`MODEL_NUMBER` = 5 for iPod Video) and rewritten, then the file is saved via a temp‑file + atomic rename.
+5. Saves the original bytes + offset to `.rockbox/.macrockpod-logo.json` on the iPod so re‑swapping and **Restore Original** keep working after the stock logo is gone.
+
+It writes only the mounted FAT32 volume as the user, so unlike the installer it needs **no admin password or Full Disk Access**. The reference blob is regenerated from the Rockbox source with `node build/generate-stock-logo.js`; `npm test` golden‑checks it against a pinned sha256. The packer/locator/replacer are unit‑tested in [`test/logo.test.js`](test/logo.test.js).
 
 > **Note on coverage:** the full flow is validated end‑to‑end on a 2048‑byte‑sector iPod Video 5.5G. The Mac‑format→Windows‑format conversion reuses upstream ipodpatcher's tested read path plus the validated MBR/format/patch sequence; if you're the first to run it on a *pristine* Apple‑formatted (APM) iPod, please confirm it and report back.
 

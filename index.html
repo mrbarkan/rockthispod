@@ -41,9 +41,25 @@
 
     <!-- Main Content Panels -->
     <section class="main-content">
-      
+
+      <!-- Panel 0: Home -->
+      <div class="panel-screen active" id="panel-home">
+        <h2>MacRockPod</h2>
+        <p class="subtitle">What would you like to do?</p>
+        <div class="home-choices">
+          <button class="glass-card home-choice" id="choice-install">
+            <span class="home-choice-title">Install Rockbox</span>
+            <span class="home-choice-desc">Format a flash-modded iPod Video and install Rockbox.</span>
+          </button>
+          <button class="glass-card home-choice" id="choice-logo">
+            <span class="home-choice-title">Change Boot Logo</span>
+            <span class="home-choice-desc">Swap the boot logo on an iPod that already runs Rockbox.</span>
+          </button>
+        </div>
+      </div>
+
       <!-- Panel 1: Device Selection -->
-      <div class="panel-screen active" id="panel-scan">
+      <div class="panel-screen" id="panel-scan">
         <h2>Connect Your iPod</h2>
         <p class="subtitle">Please plug in your flash-modded iPod and make sure it is in Disk Mode.</p>
         
@@ -183,6 +199,80 @@
 
         <div class="actions-row">
           <button class="btn primary-btn" id="btn-close-app">Finish & Close</button>
+        </div>
+      </div>
+
+      <!-- Logo Panel A: Select Rockbox iPod -->
+      <div class="panel-screen" id="panel-logo-select">
+        <h2>Change Boot Logo</h2>
+        <p class="subtitle">Select an iPod that already has Rockbox installed.</p>
+        <div class="device-list" id="logo-device-list">
+          <div class="loading-spinner-container" id="logo-scan-loading">
+            <div class="spinner"></div>
+            <p>Scanning for Rockbox iPods...</p>
+          </div>
+        </div>
+        <div class="configuration-card glass-card">
+          <p class="card-desc">Plug the iPod in with the <strong>HOLD switch ON</strong> so it mounts in disk mode. Only iPods with a Rockbox install (<code>.rockbox/rockbox.ipod</code>) are listed.</p>
+        </div>
+        <div class="actions-row">
+          <button class="btn secondary-btn" id="btn-logo-back-home">Back</button>
+          <button class="btn secondary-btn" id="btn-logo-rescan">Rescan</button>
+          <button class="btn primary-btn disabled" id="btn-logo-to-config" disabled>Choose Image</button>
+        </div>
+      </div>
+
+      <!-- Logo Panel B: Pick image, fit, preview -->
+      <div class="panel-screen" id="panel-logo-config">
+        <h2>Boot Logo</h2>
+        <p class="subtitle">Pick an image, choose how it fits the 320×98 logo area, then apply.</p>
+
+        <div class="glass-card logo-config-card">
+          <input type="file" id="logo-file-input" accept="image/*" hidden>
+          <button class="btn secondary-btn" id="btn-pick-image">Choose Image…</button>
+          <span id="logo-file-name" class="logo-file-name">No image selected</span>
+
+          <div class="logo-preview-wrap">
+            <canvas id="logo-preview" width="320" height="98"></canvas>
+          </div>
+
+          <div class="logo-controls">
+            <div class="logo-control-group">
+              <span class="logo-control-label">Fit</span>
+              <label><input type="radio" name="logo-fit" value="letterbox" checked> Letterbox</label>
+              <label><input type="radio" name="logo-fit" value="crop"> Crop</label>
+              <label><input type="radio" name="logo-fit" value="stretch"> Stretch</label>
+            </div>
+            <div class="logo-control-group">
+              <span class="logo-control-label">Background</span>
+              <input type="color" id="logo-pad-color" value="#000000">
+            </div>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button class="btn secondary-btn" id="btn-logo-back-select">Back</button>
+          <button class="btn secondary-btn" id="btn-logo-restore">Restore Original</button>
+          <button class="btn primary-btn disabled" id="btn-logo-apply" disabled>Apply Logo</button>
+        </div>
+        <p class="progress-status-text" id="logo-status-text"></p>
+      </div>
+
+      <!-- Logo Panel C: Done -->
+      <div class="panel-screen" id="panel-logo-done">
+        <div class="success-icon-container">
+          <div class="success-circle">
+            <svg class="checkmark-svg" viewBox="0 0 52 52">
+              <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
+              <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+            </svg>
+          </div>
+        </div>
+        <h2 id="logo-done-title">Boot Logo Updated!</h2>
+        <p class="subtitle" id="logo-done-subtitle">Eject the iPod, then reset it (toggle HOLD off and hold MENU+SELECT for ~6 seconds) to see the new logo.</p>
+        <div class="actions-row">
+          <button class="btn secondary-btn" id="btn-logo-another">Change Another</button>
+          <button class="btn primary-btn" id="btn-logo-home">Done</button>
         </div>
       </div>
 

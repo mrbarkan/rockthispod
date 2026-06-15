@@ -692,3 +692,30 @@ select:focus {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
 }
+
+/* ---- Home screen & logo flow ---- */
+.sidebar-progress { display: none; }
+body.mode-install .sidebar-progress { display: flex; }
+
+.home-choices { display: flex; flex-direction: column; gap: 16px; margin-top: 24px; }
+.home-choice {
+  display: flex; flex-direction: column; gap: 6px; text-align: left;
+  padding: 20px; cursor: pointer; border: none; width: 100%;
+  font-family: inherit; transition: transform 0.12s ease;
+}
+.home-choice:hover { transform: translateY(-2px); }
+.home-choice-title { font-size: 17px; font-weight: 600; color: var(--text-main); }
+.home-choice-desc { font-size: 13px; color: var(--text-muted); }
+
+.logo-config-card { padding: 18px; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.logo-file-name { font-size: 12.5px; color: var(--text-muted); }
+.logo-preview-wrap {
+  width: 100%; display: flex; justify-content: center; padding: 16px;
+  background: repeating-conic-gradient(#2a2a2a 0% 25%, #1f1f1f 0% 50%) 50% / 20px 20px;
+  border-radius: 8px;
+}
+#logo-preview { width: 320px; height: 98px; image-rendering: pixelated; box-shadow: 0 0 0 1px rgba(255,255,255,0.1); }
+.logo-controls { display: flex; gap: 28px; flex-wrap: wrap; }
+.logo-control-group { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-main); }
+.logo-control-group label { display: inline-flex; align-items: center; gap: 4px; }
+.logo-control-label { font-weight: 600; color: var(--text-muted); }

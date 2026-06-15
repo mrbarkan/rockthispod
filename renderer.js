@@ -48,8 +48,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let devices = [];
   let selectedDevice = null;
 
-  checkRootStatus();
-  scanDevices();
+  // Start on the home screen; each flow scans when entered.
+  document.body.classList.remove('mode-install');
 
   async function checkRootStatus() {
     try {
@@ -262,4 +262,160 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     panelInstall.appendChild(backBtn);
   }
+
+  // ---- Panel routing helpers ----
+  function showPanel(id, mode) {
+    document.querySelectorAll('.panel-screen').forEach((p) => p.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    document.body.classList.toggle('mode-install', mode === 'install');
+  }
+
+  // ---- Home screen ----
+  document.getElementById('choice-install').addEventListener('click', () => {
+    showPanel('panel-scan', 'install');
+    checkRootStatus();
+    scanDevices();
+  });
+  document.getElementById('choice-logo').addEventListener('click', () => {
+    showPanel('panel-logo-select', 'logo');
+    scanRockboxDevices();
+  });
+
+  // ---- Logo flow state ----
+  const logoDeviceList = document.getElementById('logo-device-list');
+  const btnLogoToConfig = document.getElementById('btn-logo-to-config');
+  const fileInput = document.getElementById('logo-file-input');
+  const previewCanvas = document.getElementById('logo-preview');
+  const previewCtx = previewCanvas.getContext('2d', { willReadFrequently: true });
+  const logoStatus = document.getElementById('logo-status-text');
+  const btnApply = document.getElementById('btn-logo-apply');
+
+  let logoDevice = null;   // { ...ipod, mountPath }
+  let logoImage = null;    // ImageBitmap
+
+  async function scanRockboxDevices() {
+    logoDevice = null;
+    btnLogoToConfig.classList.add('disabled');
+    btnLogoToConfig.disabled = true;
+    logoDeviceList.innerHTML = `
+      <div class="loading-spinner-container"><div class="spinner"></div>
+      <p>Scanning for Rockbox iPods...</p></div>`;
+    let devices = [];
+    try { devices = await window.electronAPI.scanRockboxIpods(); } catch (_) {}
+    logoDeviceList.innerHTML = '';
+    if (!devices.length) {
+      logoDeviceList.innerHTML = `
+        <div class="loading-spinner-container">
+        <p style="color: var(--text-muted);">No Rockbox iPod found. Plug it in with HOLD ON, then Rescan.</p></div>`;
+      return;
+    }
+    devices.forEach((dev) => {
+      const card = document.createElement('div');
+      card.className = 'device-card';
+      card.innerHTML = `
+        <div class="device-info">
+          <div class="device-title">${dev.name}</div>
+          <div class="device-details">${dev.size} • ${dev.id}</div>
+        </div>
+        <span class="device-badge winpod">Rockbox</span>`;
+      card.addEventListener('click', () => {
+        document.querySelectorAll('#logo-device-list .device-card').forEach((c) => c.classList.remove('selected'));
+        card.classList.add('selected');
+        logoDevice = dev;
+        btnLogoToConfig.classList.remove('disabled');
+        btnLogoToConfig.disabled = false;
+      });
+      logoDeviceList.appendChild(card);
+    });
+  }
+
+  document.getElementById('btn-logo-rescan').addEventListener('click', scanRockboxDevices);
+  document.getElementById('btn-logo-back-home').addEventListener('click', () => showPanel('panel-home', 'home'));
+  document.getElementById('btn-logo-to-config').addEventListener('click', () => {
+    showPanel('panel-logo-config', 'logo');
+    logoStatus.textContent = '';
+    redrawPreview();
+  });
+  document.getElementById('btn-logo-back-select').addEventListener('click', () => showPanel('panel-logo-select', 'logo'));
+
+  // ---- Image picking + canvas fit/preview ----
+  document.getElementById('btn-pick-image').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    document.getElementById('logo-file-name').textContent = file.name;
+    try {
+      logoImage = await createImageBitmap(file);
+    } catch (_) {
+      logoStatus.textContent = 'Could not read that image. Try a PNG or JPG.';
+      return;
+    }
+    redrawPreview();
+    btnApply.classList.remove('disabled');
+    btnApply.disabled = false;
+  });
+
+  function currentFit() {
+    return document.querySelector('input[name="logo-fit"]:checked').value;
+  }
+  function currentPad() {
+    return document.getElementById('logo-pad-color').value;
+  }
+
+  function redrawPreview() {
+    const W = 320, H = 98;
+    previewCtx.clearRect(0, 0, W, H);
+    previewCtx.fillStyle = currentPad();
+    previewCtx.fillRect(0, 0, W, H);
+    if (!logoImage) return;
+    const iw = logoImage.width, ih = logoImage.height;
+    const fit = currentFit();
+    if (fit === 'stretch') {
+      previewCtx.drawImage(logoImage, 0, 0, W, H);
+    } else {
+      const s = fit === 'crop' ? Math.max(W / iw, H / ih) : Math.min(W / iw, H / ih);
+      const dw = iw * s, dh = ih * s;
+      previewCtx.drawImage(logoImage, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    }
+  }
+
+  document.querySelectorAll('input[name="logo-fit"]').forEach((r) => r.addEventListener('change', redrawPreview));
+  document.getElementById('logo-pad-color').addEventListener('input', redrawPreview);
+
+  // ---- Apply / restore ----
+  document.getElementById('btn-logo-apply').addEventListener('click', async () => {
+    if (!logoDevice || !logoImage) return;
+    btnApply.disabled = true;
+    logoStatus.textContent = 'Applying logo...';
+    const rgba = previewCtx.getImageData(0, 0, 320, 98).data; // Uint8ClampedArray
+    const res = await window.electronAPI.changeLogo(logoDevice.mountPath, rgba.buffer);
+    btnApply.disabled = false;
+    if (res && res.success) {
+      showPanel('panel-logo-done', 'logo');
+    } else {
+      logoStatus.innerHTML = `❌ <span style="color:#e74c3c;">${(res && res.error) || 'Failed to apply logo.'}</span>`;
+    }
+  });
+
+  document.getElementById('btn-logo-restore').addEventListener('click', async () => {
+    if (!logoDevice) return;
+    logoStatus.textContent = 'Restoring original logo...';
+    const res = await window.electronAPI.restoreLogo(logoDevice.mountPath);
+    if (res && res.success) {
+      document.getElementById('logo-done-title').textContent = res.alreadyStock ? 'Already the Original Logo' : 'Original Logo Restored!';
+      showPanel('panel-logo-done', 'logo');
+    } else {
+      logoStatus.innerHTML = `❌ <span style="color:#e74c3c;">${(res && res.error) || 'Failed to restore.'}</span>`;
+    }
+  });
+
+  document.getElementById('btn-logo-another').addEventListener('click', () => {
+    document.getElementById('logo-done-title').textContent = 'Boot Logo Updated!';
+    showPanel('panel-logo-select', 'logo');
+    scanRockboxDevices();
+  });
+  document.getElementById('btn-logo-home').addEventListener('click', () => {
+    document.getElementById('logo-done-title').textContent = 'Boot Logo Updated!';
+    showPanel('panel-home', 'home');
+  });
 });
